@@ -65,10 +65,11 @@ static const uint8_t INPUT_HIGH_STATE = 0xFF;
 static const uint8_t INPUT_LOW_STATE = 0x00;
 static const uint8_t inputPins[NUM_IOS] = {2, 3, 4, 5, 6, 7, 8, 9};
 static  uint8_t inputCounters[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
-static  byte    inputStates = 0;
-static  byte    lastInputStates = 0;
+static  byte    inputsState = 0;
+static  byte    inputsStateToPublish = 0;
+static  byte    lastinputsState = 0;
 static  byte    outputsState = 0;
-static  byte    lastPublishedOutputsState = 0;
+static  byte    outputsStateToPublish = 0;
 
 #define ETH_SHIELD_RESET_PIN A0
 
@@ -76,21 +77,27 @@ static  byte    lastPublishedOutputsState = 0;
 
 void MCP27008_setup()
 {
-   Wire.beginTransmission(MCP27008_ADRESS);      // start talking to the device
-   Wire.write(0x00);                   // select the IODIR register
-   Wire.write(0x00);                   // set register value-all high, sets all pins as outputs on MCP23008
-   Wire.endTransmission();            // stop talking to the devicevice
+  uint8_t error;
+  Wire.beginTransmission(MCP27008_ADRESS);      // start talking to the device
+  Wire.write(0x00);                   // select the IODIR register
+  Wire.write(0x00);                   // set register value-all low, sets all pins as outputs on MCP23008
+  error = Wire.endTransmission();             // stop talking to the devicevice
+  if(error != 0)
+  {
+    Serial.print("MCP setup error: ");
+    Serial.println(error);
+  }
 }
 uint8_t MCP27008_write(uint8_t value)
 {
   uint8_t error;
   Wire.beginTransmission(MCP27008_ADRESS);
   Wire.write(0x09);                   // select the GPIO register
-  Wire.write(value);                   // set register value-all high
+  Wire.write(value);                  // set register value
   error = Wire.endTransmission();
   if(error != 0)
   {
-    Serial.print("MCP27008_write error: ");
+    Serial.print("MCP write error: ");
     Serial.println(error);
   }
   return error;
@@ -109,6 +116,7 @@ void setOutputState(int index, bool state)
   }
   if(outputsState != currentState)
   {
+    set_bit(outputsStateToPublish, index);
     //Serial.print("O: ");
     //Serial.println(outputsState, BIN);
     MCP27008_write(outputsState);
@@ -137,13 +145,17 @@ void callback(char* topic, byte* payload, unsigned int length)
     Serial.println("Wrg pin");
     return;
   }
-  if(length == 2 && memcmp((char*)payload, "ON", 2) == 0)
+  if(length == 2 && memcmp(payload, "ON", 2) == 0)
   {
     setOutputState(relayPin-1, true );
   }
-  else if(length == 3 && memcmp((char*)payload, "OFF", 3) == 0)
+  else if(length == 3 && memcmp(payload, "OFF", 3) == 0)
   {
     setOutputState(relayPin-1, false );
+  }
+  else if(length == 6 && memcmp(payload, "TOGGLE", 6) == 0)
+  {
+    toggleOutputState(relayPin-1);
   }
   else
   {
@@ -166,35 +178,47 @@ void readInputs()
     }
     if(inputCounters[i] == INPUT_HIGH_STATE)
     {
-      set_bit(inputStates, i);
+      set_bit(inputsState, i);
     }
     else if(inputCounters[i] == INPUT_LOW_STATE)
     {
-      clear_bit(inputStates, i);
+      clear_bit(inputsState, i);
     }
-    if(get_bit(inputStates, i) != get_bit(lastInputStates, i))
+    if(get_bit(inputsState, i) != get_bit(lastinputsState, i))
     {
-      if(get_bit(inputStates, i))
+      if(!get_bit(mqttSettings.mode, i))
       {
-        toggleOutputState(i);
+        if(get_bit(inputsState, i))
+        {
+          toggleOutputState(i);
+        }
+      }
+      else
+      {  
+        set_bit(inputsStateToPublish, i);
       }
     }
   }
-  lastInputStates = inputStates;
+  lastinputsState = inputsState;
 }
 
 void checkOutputsAndPublish(PubSubClient& client)
 {
+  noInterrupts();
+  byte currentOutputsStateToPublish = outputsStateToPublish;
   byte currentOutputsState = outputsState;
-  if(lastPublishedOutputsState == currentOutputsState)
+  outputsStateToPublish = 0;
+  interrupts();
+  
+  if(currentOutputsStateToPublish == 0)
     return;
   
   for(int i = 0; i < NUM_IOS; ++i)
   {
-    if(get_bit(lastPublishedOutputsState, i) != get_bit(currentOutputsState, i))
+    if(get_bit(currentOutputsStateToPublish, i))
     {
       TOPIC_OUT_TO_PUBLISH[TOPIC_CHANNEL_START_INDEX] = i + '1';
-      if(get_bit(outputsState, i))
+      if(get_bit(currentOutputsState, i))
       {
         Serial.print(TOPIC_OUT_TO_PUBLISH);
         Serial.println(": ON");
@@ -208,11 +232,37 @@ void checkOutputsAndPublish(PubSubClient& client)
       }
     }
   }
-  lastPublishedOutputsState = currentOutputsState;
 }
 void checkInputsAndPublish(PubSubClient& client)
 {
+  noInterrupts();
+  byte currentInputsStateToPublish = inputsStateToPublish;
+  byte currentInputsState = inputsState;
+  inputsStateToPublish = 0;
+  interrupts();
   
+  if(currentInputsStateToPublish == 0)
+    return;
+  
+  for(int i = 0; i < NUM_IOS; ++i)
+  {
+    if(get_bit(mqttSettings.mode, i) && get_bit(currentInputsStateToPublish, i))
+    {
+      TOPIC_IN_TO_PUBLISH[TOPIC_CHANNEL_START_INDEX] = i + '1';
+      if(get_bit(currentInputsState, i))
+      {
+        Serial.print(TOPIC_IN_TO_PUBLISH);
+        Serial.println(": ON");
+        client.publish((const char*)TOPIC_IN_TO_PUBLISH, "ON");
+      }
+      else
+      {
+        Serial.print(TOPIC_IN_TO_PUBLISH);
+        Serial.println(": OFF");
+        client.publish((const char*)TOPIC_IN_TO_PUBLISH, "OFF");
+      }
+    }
+  }
 }
 
 void PrintTwoDigitHex (byte b, boolean newline)
@@ -392,9 +442,10 @@ void handleMqttClient()
   }
   else
   {
+    checkOutputsAndPublish(mqttClient);
+    checkInputsAndPublish(mqttClient);
     mqttClient.loop();
   }
-  checkOutputsAndPublish(mqttClient);
 }
 void handleHttpServer()
 {
@@ -444,7 +495,7 @@ void handleHttpServer()
       if(addressStr != NULL)
       {
         addressStr += 3;
-        Serial.print("IP:");
+        Serial.print("ip: ");
         pch = strtok (addressStr, ".");
         while (addressStr != NULL && counter < 4)
         {
@@ -460,7 +511,7 @@ void handleHttpServer()
       if(portStr != NULL)
       {
         portStr += 5;
-        Serial.print("PORT:");
+        Serial.print("port: ");
         pch = strtok (portStr, "&");
         Serial.println(pch);
         mqttSettings.mqtt_port = atoi(pch);
@@ -468,7 +519,7 @@ void handleHttpServer()
       if(userStr != NULL)
       {
         userStr += 5;
-        Serial.print("USER:");
+        Serial.print("user: ");
         pch = strtok (userStr, "&");
         Serial.println(pch);
         strcpy(mqttSettings.mqtt_username, pch);
@@ -476,7 +527,7 @@ void handleHttpServer()
       if(pwdStr != NULL)
       {
         pwdStr += 4;
-        Serial.print("PWD:");
+        Serial.print("pwd: ");
         pch = strtok (pwdStr, "&");
         Serial.println(pch);
         strcpy(mqttSettings.mqtt_password, pch);
@@ -484,15 +535,15 @@ void handleHttpServer()
       if(modeStr != NULL)
       {
         modeStr += 5;
-        Serial.print("MODE:");
+        Serial.print("mode: ");
         pch = strtok (modeStr, "&");
         Serial.println(pch);
         for(int i = 0; i < NUM_IOS; ++i)
         {
           if(pch[i] == '1')
-            set_bit(mqttSettings.mode, i);
+            set_bit(mqttSettings.mode, 7-i);
           else if(pch[i] == '0')
-            clear_bit(mqttSettings.mode, i);
+            clear_bit(mqttSettings.mode, 7-i);
         }
       }
       if(addressStr || portStr || userStr || pwdStr || modeStr)
@@ -510,9 +561,9 @@ void handleHttpServer()
       remoteClient.println("</HEAD>");
       remoteClient.println("<BODY>");
 
-      remoteClient.println("<H1>MQTT settings</H1>");
+      remoteClient.println("<H1>Settings</H1>");
 
-      remoteClient.print("IP: ");
+      remoteClient.print("ip: ");
       for(int i = 0; i < 4; ++i)
       {
         remoteClient.print(mqttSettings.mqtt_ip[i]);
@@ -529,7 +580,10 @@ void handleHttpServer()
       remoteClient.print((const char*)mqttSettings.mqtt_password);
       remoteClient.println("<BR>");
       remoteClient.print("mode: ");
-      remoteClient.print(mqttSettings.mode, BIN);
+      for(int i = 7; i >= 0; --i)
+      {
+        remoteClient.print(get_bit(mqttSettings.mode, i) ? '1' : '0');
+      }
       remoteClient.println("<BR>");
 
       remoteClient.println("</FORM>");
