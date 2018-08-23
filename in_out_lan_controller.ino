@@ -23,7 +23,11 @@
 
 SoftWire Wire = SoftWire();
 
-#define EEPROM_VER 0x55
+#define EEPROM_VERSION_OFFSET  0
+#define EEPROM_SETTINGS_OFFSET 1
+#define EEPROM_VERSION         0x55
+
+#define ETH_SHIELD_RESET_PIN   A0
 
 static struct StoredSettings{
   uint8_t  ver;
@@ -31,8 +35,10 @@ static struct StoredSettings{
   uint16_t mqtt_port;
   char     mqtt_username[32];
   char     mqtt_password[16];
-  byte     mode; // 0 - input changes output, output is published and subscribed, 1 - input and output independent, input is published, output is subscribed
-} mqttSettings;
+  // 0 - input changes output, output is published and subscribed
+  // 1 - input and output independent, input is published, output is published and subscribed
+  byte     mode;
+} boardSettings;
 
 #define set_bit(var, bit_nr) ((var) |= 1 << (bit_nr))
 #define clear_bit(var, bit_nr) ((var) &= ~(1 << (bit_nr)))
@@ -45,12 +51,16 @@ inline void toHexStr (byte b, char* target)
   target[1] = hex_to_char[b&0x0F];
 }
 
-#define TOPIC_ID_START_INDEX 7
-#define TOPIC_CHANNEL_START_INDEX 24
+static const uint8_t TOPIC_ID_START_INDEX = 3;
 
-char TOPIC_CMD_TO_SUBSCRIBE[] = { "Dom/io/\0\0\0\0\0\0\0\0/kome/wy/+\0" };
-char TOPIC_IN_TO_PUBLISH[]    = { "Dom/io/\0\0\0\0\0\0\0\0/stan/we/ \0"  };
-char TOPIC_OUT_TO_PUBLISH[]   = { "Dom/io/\0\0\0\0\0\0\0\0/stan/wy/ \0"  };
+static const uint8_t TOPIC_CMD_CHANNEL_INDEX = 24;
+char outputCommandTopic[]     = { "IO/\0\0\0\0\0\0\0\0/command/out/+\0" };
+
+static const uint8_t TOPIC_IN_STATE_CHANNEL_INDEX = 21;
+char inputStateTopic[]  = { "IO/\0\0\0\0\0\0\0\0/state/in/ \0"  };
+
+static const uint8_t TOPIC_OUT_STATE_CHANNEL_INDEX = 22;
+char outputStateTopic[] = { "IO/\0\0\0\0\0\0\0\0/state/out/ \0"  };
 
 // Update these with values suitable for your network.
 byte mac[] = { 0x6C, 0x75, 0x00, 0x00, 0x00, 0x00, 0x00 };
@@ -60,20 +70,18 @@ EthernetClient remoteClient;
 PubSubClient   mqttClient(remoteClient);
 OneWire        ds2401(A1);
 
-static const int     NUM_IOS = 8;
+static const uint8_t NUM_IOS = 8;
 static const uint8_t INPUT_HIGH_STATE = 0xFF;
 static const uint8_t INPUT_LOW_STATE = 0x00;
-static const uint8_t inputPins[NUM_IOS] = {2, 3, 4, 5, 6, 7, 8, 9};
+static const uint8_t INPUT_PINS_START = 2;
+static const uint8_t MCP27008_ADRESS = 0x27;
+
 static  uint8_t inputCounters[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
 static  byte    inputsState = 0;
 static  byte    inputsStateToPublish = 0;
 static  byte    lastinputsState = 0;
 static  byte    outputsState = 0;
 static  byte    outputsStateToPublish = 0;
-
-#define ETH_SHIELD_RESET_PIN A0
-
-#define MCP27008_ADRESS 0x27
 
 void MCP27008_setup()
 {
@@ -128,7 +136,7 @@ void toggleOutputState(int index)
 }
 void callback(char* topic, byte* payload, unsigned int length)
 {
-  int relayPin = 0;
+  int8_t relayPin = 0;
   Serial.print("Msg: ");
   Serial.println(topic);
 //  Serial.print("[");
@@ -138,7 +146,7 @@ void callback(char* topic, byte* payload, unsigned int length)
 //  }
 //  Serial.println("]");
 
-  relayPin = topic[TOPIC_CHANNEL_START_INDEX] - '0';
+  relayPin = topic[TOPIC_CMD_CHANNEL_INDEX] - '0';
 
   if(relayPin < 1 || relayPin > NUM_IOS)
   {
@@ -165,10 +173,10 @@ void callback(char* topic, byte* payload, unsigned int length)
 
 void readInputs()
 {
-  for(int i = 0; i < NUM_IOS; ++i)
+  for(uint8_t i = 0; i < NUM_IOS; ++i)
   {
     inputCounters[i] <<= 1;
-    if(digitalRead(inputPins[i]) == LOW)
+    if(digitalRead(INPUT_PINS_START + i) == LOW)
     {
       inputCounters[i] += 1;
     }
@@ -186,7 +194,7 @@ void readInputs()
     }
     if(get_bit(inputsState, i) != get_bit(lastinputsState, i))
     {
-      if(!get_bit(mqttSettings.mode, i))
+      if(!get_bit(boardSettings.mode, i))
       {
         if(get_bit(inputsState, i))
         {
@@ -213,22 +221,22 @@ void checkOutputsAndPublish(PubSubClient& client)
   if(currentOutputsStateToPublish == 0)
     return;
   
-  for(int i = 0; i < NUM_IOS; ++i)
+  for(uint8_t i = 0; i < NUM_IOS; ++i)
   {
     if(get_bit(currentOutputsStateToPublish, i))
     {
-      TOPIC_OUT_TO_PUBLISH[TOPIC_CHANNEL_START_INDEX] = i + '1';
+      outputStateTopic[TOPIC_OUT_STATE_CHANNEL_INDEX] = i + '1';
       if(get_bit(currentOutputsState, i))
       {
-        Serial.print(TOPIC_OUT_TO_PUBLISH);
+        Serial.print(outputStateTopic);
         Serial.println(": ON");
-        client.publish((const char*)TOPIC_OUT_TO_PUBLISH, "ON");
+        client.publish((const char*)outputStateTopic, "ON");
       }
       else
       {
-        Serial.print(TOPIC_OUT_TO_PUBLISH);
+        Serial.print(outputStateTopic);
         Serial.println(": OFF");
-        client.publish((const char*)TOPIC_OUT_TO_PUBLISH, "OFF");
+        client.publish((const char*)outputStateTopic, "OFF");
       }
     }
   }
@@ -244,22 +252,22 @@ void checkInputsAndPublish(PubSubClient& client)
   if(currentInputsStateToPublish == 0)
     return;
   
-  for(int i = 0; i < NUM_IOS; ++i)
+  for(uint8_t i = 0; i < NUM_IOS; ++i)
   {
-    if(get_bit(mqttSettings.mode, i) && get_bit(currentInputsStateToPublish, i))
+    if(get_bit(boardSettings.mode, i) && get_bit(currentInputsStateToPublish, i))
     {
-      TOPIC_IN_TO_PUBLISH[TOPIC_CHANNEL_START_INDEX] = i + '1';
+      inputStateTopic[TOPIC_IN_STATE_CHANNEL_INDEX] = i + '1';
       if(get_bit(currentInputsState, i))
       {
-        Serial.print(TOPIC_IN_TO_PUBLISH);
+        Serial.print(inputStateTopic);
         Serial.println(": ON");
-        client.publish((const char*)TOPIC_IN_TO_PUBLISH, "ON");
+        client.publish((const char*)inputStateTopic, "ON");
       }
       else
       {
-        Serial.print(TOPIC_IN_TO_PUBLISH);
+        Serial.print(inputStateTopic);
         Serial.println(": OFF");
-        client.publish((const char*)TOPIC_IN_TO_PUBLISH, "OFF");
+        client.publish((const char*)inputStateTopic, "OFF");
       }
     }
   }
@@ -293,17 +301,17 @@ void getMacAddress(byte* target)
     for (i = 0; i < 4; i++)
     {
       target[i+2] = ds2401.read();
-      toHexStr(target[i+2], TOPIC_CMD_TO_SUBSCRIBE + (TOPIC_ID_START_INDEX + i*2));
-      toHexStr(target[i+2], TOPIC_IN_TO_PUBLISH + (TOPIC_ID_START_INDEX + i*2));
-      toHexStr(target[i+2], TOPIC_OUT_TO_PUBLISH + (TOPIC_ID_START_INDEX + i*2));
+      toHexStr(target[i+2], outputCommandTopic + (TOPIC_ID_START_INDEX + i*2));
+      toHexStr(target[i+2], inputStateTopic + (TOPIC_ID_START_INDEX + i*2));
+      toHexStr(target[i+2], outputStateTopic + (TOPIC_ID_START_INDEX + i*2));
       
       PrintTwoDigitHex (target[i+2], 0);
       if(i<3)Serial.print(":");
     }
     Serial.println();
-    //Serial.println(TOPIC_TO_SUBSCRIBE);
-    //Serial.println(TOPIC_IN_TO_PUBLISH);
-    //Serial.println(TOPIC_OUT_TO_PUBLISH);
+    Serial.println(outputCommandTopic);
+    Serial.println(inputStateTopic);
+    Serial.println(outputStateTopic);
   }
   else //Nothing is connected in the bus
   {
@@ -318,41 +326,36 @@ void setup()
     ; // wait for serial port to connect. Needed for Leonardo only
   }
  
-  for(int i = 0; i < NUM_IOS; ++i)
+  for(uint8_t i = 0; i < NUM_IOS; ++i)
   {
-    pinMode(inputPins[i], INPUT_PULLUP);      // sets the switch sensor digital pin as input
+    pinMode(INPUT_PINS_START + i, INPUT_PULLUP);      // sets the switch sensor digital pin as input
   }
   
   pinMode(ETH_SHIELD_RESET_PIN, OUTPUT);
   
   getMacAddress(mac);
-  
 
-  if(EEPROM.read(0) != EEPROM_VER)
+  if(EEPROM.read(EEPROM_VERSION_OFFSET) != EEPROM_VERSION)
   {
-    memset(&mqttSettings, 0, sizeof(mqttSettings));
-//    mqttSettings.mqtt_ip[0] = 192;
-//    mqttSettings.mqtt_ip[1] = 168;
-//    mqttSettings.mqtt_ip[2] = 1;
-//    mqttSettings.mqtt_ip[3] = 3;
-//    mqttSettings.mqtt_port = 1883;
-    EEPROM.write(0, EEPROM_VER);
-    EEPROM.put(1, mqttSettings);
+    Serial.println("Clearing!");
+    memset(&boardSettings, 0, sizeof(boardSettings));
+    EEPROM.write(EEPROM_VERSION_OFFSET, EEPROM_VERSION);
+    EEPROM.put(EEPROM_SETTINGS_OFFSET, boardSettings);
   }
   
-  EEPROM.get(1, mqttSettings);
+  EEPROM.get(EEPROM_SETTINGS_OFFSET, boardSettings);
   
-  for(int i = 0; i < 4; ++i)
+  for(uint8_t i = 0; i < 4; ++i)
   {
-    Serial.print(mqttSettings.mqtt_ip[i]);
+    Serial.print(boardSettings.mqtt_ip[i]);
     if(i < 3)Serial.print(".");
   }
   Serial.print(":");
-  Serial.println(mqttSettings.mqtt_port);
+  Serial.println(boardSettings.mqtt_port);
   
-  Serial.print(mqttSettings.mqtt_username);
+  Serial.print(boardSettings.mqtt_username);
   Serial.print(":");
-  Serial.println(mqttSettings.mqtt_password);
+  Serial.println(boardSettings.mqtt_password);
   
   Wire.begin();
   
@@ -362,10 +365,10 @@ void setup()
   MsTimer2::set(2, readInputs);
   MsTimer2::start();
 
+/*
   byte error, address;
   int nDevices;
   Serial.println("Scanning...");
-
   nDevices = 0;
   for(address = 1; address < 127; address++ )
   {
@@ -393,7 +396,7 @@ void setup()
       Serial.println(address,HEX);
     }
   }
-
+*/
   // Enable eth module.
   digitalWrite(A0, HIGH);
 
@@ -425,12 +428,12 @@ void handleMqttClient()
 
     if(sinceLastConnect >= 10000)
     {
-      mqttClient.setServer(mqttSettings.mqtt_ip, mqttSettings.mqtt_port);
+      mqttClient.setServer(boardSettings.mqtt_ip, boardSettings.mqtt_port);
       Serial.print("MQTT con...");
-      if (mqttClient.connect((const char*)(mac+2), mqttSettings.mqtt_username, mqttSettings.mqtt_password)) {
+      if (mqttClient.connect((const char*)(mac+2), boardSettings.mqtt_username, boardSettings.mqtt_password)) {
         Serial.print(" conn: Sub:");
-        Serial.println(TOPIC_CMD_TO_SUBSCRIBE);
-        mqttClient.subscribe(TOPIC_CMD_TO_SUBSCRIBE);
+        Serial.println(outputCommandTopic);
+        mqttClient.subscribe(outputCommandTopic);
       }
       else
       {
@@ -451,7 +454,7 @@ void handleHttpServer()
 {
   static const int PROGMEM srvBufferSize = 100;
   static char srvBuffer[101];
-  static int  srvBufferPos = 0;
+  static byte srvBufferPos = 0;
   static EthernetClient remoteClient;
   
   // listen for incoming clients
@@ -484,25 +487,25 @@ void handleHttpServer()
 
       //now output HTML data header
       // Parse get request
-      char* addressStr, *portStr, *pch, *userStr, *pwdStr, *modeStr;
+      char* ipStr, *portStr, *pch, *userStr, *pwdStr, *modeStr;
       byte counter = 0;
       /////////////////////
-      addressStr = strstr(srvBuffer, "ip=");
+      ipStr = strstr(srvBuffer, "ip=");
       portStr = strstr(srvBuffer, "port=");
       userStr = strstr(srvBuffer, "user=");
       pwdStr = strstr(srvBuffer, "pwd=");
       modeStr = strstr(srvBuffer, "mode=");
-      if(addressStr != NULL)
+      if(ipStr != NULL)
       {
-        addressStr += 3;
+        ipStr += 3;
         Serial.print("ip: ");
-        pch = strtok (addressStr, ".");
-        while (addressStr != NULL && counter < 4)
+        pch = strtok (ipStr, ".");
+        while (ipStr != NULL && counter < 4)
         {
           Serial.print(pch);
           if(counter<3)Serial.print(".");
           else Serial.println("");
-          mqttSettings.mqtt_ip[counter] = atoi(pch);
+          boardSettings.mqtt_ip[counter] = atoi(pch);
           // go to next token
           pch = strtok (NULL, ".&");
           ++counter;
@@ -514,7 +517,7 @@ void handleHttpServer()
         Serial.print("port: ");
         pch = strtok (portStr, "&");
         Serial.println(pch);
-        mqttSettings.mqtt_port = atoi(pch);
+        boardSettings.mqtt_port = atoi(pch);
       }
       if(userStr != NULL)
       {
@@ -522,7 +525,7 @@ void handleHttpServer()
         Serial.print("user: ");
         pch = strtok (userStr, "&");
         Serial.println(pch);
-        strcpy(mqttSettings.mqtt_username, pch);
+        strcpy(boardSettings.mqtt_username, pch);
       }
       if(pwdStr != NULL)
       {
@@ -530,7 +533,7 @@ void handleHttpServer()
         Serial.print("pwd: ");
         pch = strtok (pwdStr, "&");
         Serial.println(pch);
-        strcpy(mqttSettings.mqtt_password, pch);
+        strcpy(boardSettings.mqtt_password, pch);
       }
       if(modeStr != NULL)
       {
@@ -538,17 +541,18 @@ void handleHttpServer()
         Serial.print("mode: ");
         pch = strtok (modeStr, "&");
         Serial.println(pch);
-        for(int i = 0; i < NUM_IOS; ++i)
+        for(uint8_t i = 0; i < NUM_IOS; ++i)
         {
           if(pch[i] == '1')
-            set_bit(mqttSettings.mode, 7-i);
+            set_bit(boardSettings.mode, 7-i);
           else if(pch[i] == '0')
-            clear_bit(mqttSettings.mode, 7-i);
+            clear_bit(boardSettings.mode, 7-i);
         }
       }
-      if(addressStr || portStr || userStr || pwdStr || modeStr)
+      if(ipStr || portStr || userStr || pwdStr || modeStr)
       {
-        EEPROM.put(0, mqttSettings);
+        EEPROM.put(EEPROM_SETTINGS_OFFSET, boardSettings);
+        mqttClient.disconnect();
       }
       // Respond with current configuration
       remoteClient.println("HTTP/1.1 200 OK");
@@ -564,25 +568,25 @@ void handleHttpServer()
       remoteClient.println("<H1>Settings</H1>");
 
       remoteClient.print("ip: ");
-      for(int i = 0; i < 4; ++i)
+      for(uint8_t i = 0; i < 4; ++i)
       {
-        remoteClient.print(mqttSettings.mqtt_ip[i]);
+        remoteClient.print(boardSettings.mqtt_ip[i]);
         if(i < 3)remoteClient.print(".");
       }
       remoteClient.println("<BR>");
       remoteClient.print("port: ");
-      remoteClient.print(mqttSettings.mqtt_port);
+      remoteClient.print(boardSettings.mqtt_port);
       remoteClient.println("<BR>");
       remoteClient.print("user: ");
-      remoteClient.print((const char*)mqttSettings.mqtt_username);
+      remoteClient.print((const char*)boardSettings.mqtt_username);
       remoteClient.println("<BR>");
       remoteClient.print("pwd: ");
-      remoteClient.print((const char*)mqttSettings.mqtt_password);
+      remoteClient.print((const char*)boardSettings.mqtt_password);
       remoteClient.println("<BR>");
       remoteClient.print("mode: ");
-      for(int i = 7; i >= 0; --i)
+      for(int8_t i = 7; i >= 0; --i)
       {
-        remoteClient.print(get_bit(mqttSettings.mode, i) ? '1' : '0');
+        remoteClient.print(get_bit(boardSettings.mode, i) ? '1' : '0');
       }
       remoteClient.println("<BR>");
 
@@ -604,7 +608,7 @@ static unsigned long maintainLastMillis = 0xFFFFFFFF;
 static long sinceLastMaintain;
 void loop()
 {
-  static int res;
+  static byte res;
   sinceLastMaintain = millis() - maintainLastMillis;
   sinceLastMaintain = sinceLastMaintain > 0 ? sinceLastMaintain : ((~((unsigned long)0) - maintainLastMillis) + millis());
   if(sinceLastMaintain >= 5000)
