@@ -281,9 +281,9 @@ void PrintTwoDigitHex (byte b, boolean newline)
 }
 void getMacAddress(byte* target)
 {
-  byte i;           // This is for the for loops
-  byte crc_calc;    //calculated CRC
-  byte crc_byte;    //actual CRC as sent by ds24012401
+  int8_t i;           // This is for the for loops
+  //byte crc_calc;    //calculated CRC
+  //byte crc_byte;    //actual CRC as sent by ds24012401
   //1-Wire bus reset, needed to start operation on the bus,
   //returns a 1/TRUE if presence pulse detected
   if (ds2401.reset() == TRUE)
@@ -293,20 +293,18 @@ void getMacAddress(byte* target)
     //PrintTwoDigitHex (ds2401.read(), 1);
     //Serial.print("HD: ");
     ds2401.read();
-    Serial.print("MAC: ");
-    PrintTwoDigitHex (target[0], 0);
-    Serial.print(":");
-    PrintTwoDigitHex (target[1], 0);
-    Serial.print(":");
-    for (i = 0; i < 4; i++)
+    for (i = 3; i >= 0; i--)
     {
       target[i+2] = ds2401.read();
       toHexStr(target[i+2], outputCommandTopic + (TOPIC_ID_START_INDEX + i*2));
       toHexStr(target[i+2], inputStateTopic + (TOPIC_ID_START_INDEX + i*2));
       toHexStr(target[i+2], outputStateTopic + (TOPIC_ID_START_INDEX + i*2));
-      
-      PrintTwoDigitHex (target[i+2], 0);
-      if(i<3)Serial.print(":");
+    }
+    Serial.print("MAC: ");
+    for (i = 0; i < 6; i++)
+    {
+      PrintTwoDigitHex (target[i], 0);
+      if(i< 5)Serial.print(":");
     }
     Serial.println();
     Serial.println(outputCommandTopic);
