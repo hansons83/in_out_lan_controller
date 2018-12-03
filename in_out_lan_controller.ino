@@ -43,24 +43,29 @@ static struct StoredSettings{
 #define set_bit(var, bit_nr) ((var) |= 1 << (bit_nr))
 #define clear_bit(var, bit_nr) ((var) &= ~(1 << (bit_nr)))
 #define get_bit(var, bit_nr) (((var) & (1 << (bit_nr))) ? true : false)
-
+/*
 const char hex_to_char[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
 inline void toHexStr (byte b, char* target)
 {
   target[0] = hex_to_char[b>>4];
   target[1] = hex_to_char[b&0x0F];
+}*/
+inline void toHexStr (byte b, char* target)
+{
+  target[0] = (b>>4) > 9 ? (b>>4)-10 + 'A' : (b>>4) + '0';
+  target[1] = (b&0x0F) > 9 ? (b&0x0F)-10 + 'A' : (b&0x0F) + '0';
 }
 
-static const uint8_t TOPIC_ID_START_INDEX = 3;
+static const uint8_t TOPIC_ID_START_INDEX = 6;
 
-static const uint8_t TOPIC_CMD_CHANNEL_INDEX = 24;
-char outputCommandTopic[]     = { "IO/\0\0\0\0\0\0\0\0/command/out/+\0" };
+static const uint8_t TOPIC_CMD_CHANNEL_INDEX = 27;
+char outputCommandTopic[]     = { "RELIO/\0\0\0\0\0\0\0\0/command/out/+\0" };
 
-static const uint8_t TOPIC_IN_STATE_CHANNEL_INDEX = 21;
-char inputStateTopic[]  = { "IO/\0\0\0\0\0\0\0\0/state/in/ \0"  };
+static const uint8_t TOPIC_IN_STATE_CHANNEL_INDEX = 24;
+char inputStateTopic[]  = { "RELIO/\0\0\0\0\0\0\0\0/state/in/ \0"  };
 
-static const uint8_t TOPIC_OUT_STATE_CHANNEL_INDEX = 22;
-char outputStateTopic[] = { "IO/\0\0\0\0\0\0\0\0/state/out/ \0"  };
+static const uint8_t TOPIC_OUT_STATE_CHANNEL_INDEX = 25;
+char outputStateTopic[] = { "RELIO/\0\0\0\0\0\0\0\0/state/out/ \0"  };
 
 // Update these with values suitable for your network.
 byte mac[] = { 0x6C, 0x75, 0x00, 0x00, 0x00, 0x00, 0x00 };
@@ -92,7 +97,7 @@ void MCP27008_setup()
   error = Wire.endTransmission();             // stop talking to the devicevice
   if(error != 0)
   {
-    Serial.print("MCP setup error: ");
+    Serial.print(F("MCP setup er: "));
     Serial.println(error);
   }
 }
@@ -105,7 +110,7 @@ uint8_t MCP27008_write(uint8_t value)
   error = Wire.endTransmission();
   if(error != 0)
   {
-    Serial.print("MCP write error: ");
+    Serial.print(F("MCP write er: "));
     Serial.println(error);
   }
   return error;
@@ -167,7 +172,7 @@ void callback(char* topic, byte* payload, unsigned int length)
   }
   else
   {
-    Serial.println("Wrg payload");
+    Serial.println(F("Wrg payload"));
   }
 }
 
@@ -226,17 +231,16 @@ void checkOutputsAndPublish(PubSubClient& client)
     if(get_bit(currentOutputsStateToPublish, i))
     {
       outputStateTopic[TOPIC_OUT_STATE_CHANNEL_INDEX] = i + '1';
+      Serial.print(outputStateTopic);
       if(get_bit(currentOutputsState, i))
       {
-        Serial.print(outputStateTopic);
         Serial.println(": ON");
-        client.publish((const char*)outputStateTopic, "ON");
+        client.publish((const char*)outputStateTopic, "ON", true);
       }
       else
       {
-        Serial.print(outputStateTopic);
         Serial.println(": OFF");
-        client.publish((const char*)outputStateTopic, "OFF");
+        client.publish((const char*)outputStateTopic, "OFF", true);
       }
     }
   }
@@ -257,15 +261,14 @@ void checkInputsAndPublish(PubSubClient& client)
     if(get_bit(boardSettings.mode, i) && get_bit(currentInputsStateToPublish, i))
     {
       inputStateTopic[TOPIC_IN_STATE_CHANNEL_INDEX] = i + '1';
+      Serial.print(inputStateTopic);
       if(get_bit(currentInputsState, i))
       {
-        Serial.print(inputStateTopic);
         Serial.println(": ON");
         client.publish((const char*)inputStateTopic, "ON");
       }
       else
       {
-        Serial.print(inputStateTopic);
         Serial.println(": OFF");
         client.publish((const char*)inputStateTopic, "OFF");
       }
@@ -313,7 +316,7 @@ void getMacAddress(byte* target)
   }
   else //Nothing is connected in the bus
   {
-    Serial.println( "No MAC");
+    Serial.println(F("No MAC"));
   }
 }
 
@@ -335,7 +338,7 @@ void setup()
 
   if(EEPROM.read(EEPROM_VERSION_OFFSET) != EEPROM_VERSION)
   {
-    Serial.println("Clearing!");
+    Serial.println(F("Clearing!"));
     memset(&boardSettings, 0, sizeof(boardSettings));
     EEPROM.write(EEPROM_VERSION_OFFSET, EEPROM_VERSION);
     EEPROM.put(EEPROM_SETTINGS_OFFSET, boardSettings);
@@ -553,45 +556,49 @@ void handleHttpServer()
         mqttClient.disconnect();
       }
       // Respond with current configuration
-      remoteClient.println("HTTP/1.1 200 OK");
-      remoteClient.println("Content-Type: text/html");
-      remoteClient.println();
+      remoteClient.println(F("HTTP/1.1 200 OK"));
+      remoteClient.println(F("Content-Type: text/html"));
+      remoteClient.println("");
+      remoteClient.println(F("<HTML>"));
+      remoteClient.println(F("<HEAD>"));
+      remoteClient.println(F("<TITLE>RELIO controller setup</TITLE>"));
+      remoteClient.println(F("</HEAD>"));
+      remoteClient.println(F("<BODY>"));
 
-      remoteClient.println("<HTML>");
-      remoteClient.println("<HEAD>");
-      remoteClient.println("<TITLE>In/Out controller setup</TITLE>");
-      remoteClient.println("</HEAD>");
-      remoteClient.println("<BODY>");
-
-      remoteClient.println("<H1>Settings</H1>");
-
-      remoteClient.print("ip: ");
+      remoteClient.println(F("<PRE>"));
+      remoteClient.print(F("<H1>Settings:</H1>"));
+      remoteClient.print("MQTT ip: \t");
       for(uint8_t i = 0; i < 4; ++i)
       {
         remoteClient.print(boardSettings.mqtt_ip[i]);
         if(i < 3)remoteClient.print(".");
+        else remoteClient.println("");
       }
-      remoteClient.println("<BR>");
-      remoteClient.print("port: ");
-      remoteClient.print(boardSettings.mqtt_port);
-      remoteClient.println("<BR>");
-      remoteClient.print("user: ");
-      remoteClient.print((const char*)boardSettings.mqtt_username);
-      remoteClient.println("<BR>");
-      remoteClient.print("pwd: ");
-      remoteClient.print((const char*)boardSettings.mqtt_password);
-      remoteClient.println("<BR>");
-      remoteClient.print("mode: ");
+      remoteClient.print(F("MQTT port: \t"));
+      remoteClient.println(boardSettings.mqtt_port);
+      remoteClient.print(F("MQTT user: \t"));
+      remoteClient.println((const char*)boardSettings.mqtt_username);
+      remoteClient.print(F("MQTT pwd: \t"));
+      remoteClient.println((const char*)boardSettings.mqtt_password);
+      remoteClient.print(F("Outputs mode: \t"));
       for(int8_t i = 7; i >= 0; --i)
       {
         remoteClient.print(get_bit(boardSettings.mode, i) ? '1' : '0');
       }
-      remoteClient.println("<BR>");
+      remoteClient.println(F("<BR>"));
+      
+      remoteClient.print(F("<H1>State:</H1>"));
+      remoteClient.print(F("Subscription: \t\t"));
+      remoteClient.println(outputCommandTopic);
+      remoteClient.print(F("MQTT connection state: \t"));
+      remoteClient.println(mqttClient.state());
+      
+      remoteClient.println(F("</PRE>"));
 
-      remoteClient.println("</FORM>");
-      remoteClient.println("<BR>");
-      remoteClient.println("</BODY>");
-      remoteClient.println("</HTML>");
+      remoteClient.println(F("</FORM>"));
+      remoteClient.println(F("<BR>"));
+      remoteClient.println(F("</BODY>"));
+      remoteClient.println(F("</HTML>"));
       
       delay(1);
       //stopping client
@@ -604,16 +611,16 @@ void handleHttpServer()
   
 static unsigned long maintainLastMillis = 0xFFFFFFFF;
 static long sinceLastMaintain;
+static byte maintainRes;
 void loop()
 {
-  static byte res;
   sinceLastMaintain = millis() - maintainLastMillis;
   sinceLastMaintain = sinceLastMaintain > 0 ? sinceLastMaintain : ((~((unsigned long)0) - maintainLastMillis) + millis());
   if(sinceLastMaintain >= 5000)
   {
     maintainLastMillis = millis();
-    res = Ethernet.maintain();
-    if(res == 2 || res == 4)
+    maintainRes = Ethernet.maintain();
+    if(maintainRes == 2 || maintainRes == 4)
     {
       Serial.print("Eth: ");
       Serial.println(Ethernet.localIP()); 
