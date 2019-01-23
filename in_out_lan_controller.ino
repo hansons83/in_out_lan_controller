@@ -11,6 +11,8 @@
 #include <OneWire.h>
 #include <EEPROM.h>
 
+#define SOFT_VER "1.0.1"
+
 #define SDA_PORT PORTC
 #define SDA_PIN 4
 #define SCL_PORT PORTC
@@ -326,6 +328,8 @@ void setup()
   while (!Serial) {
     ; // wait for serial port to connect. Needed for Leonardo only
   }
+  Serial.print(F("RELIO ver: "));
+  Serial.println(SOFT_VER);
  
   for(uint8_t i = 0; i < NUM_IOS; ++i)
   {
@@ -430,15 +434,15 @@ void handleMqttClient()
     if(sinceLastConnect >= 10000)
     {
       mqttClient.setServer(boardSettings.mqtt_ip, boardSettings.mqtt_port);
-      Serial.print("MQTT con...");
+      Serial.print(F("MQTT con..."));
       if (mqttClient.connect((const char*)(mac+2), boardSettings.mqtt_username, boardSettings.mqtt_password)) {
-        Serial.print(" conn: Sub:");
+        Serial.print(F(" Con, Sub:"));
         Serial.println(outputCommandTopic);
         mqttClient.subscribe(outputCommandTopic);
       }
       else
       {
-        Serial.print("Err, rc=");
+        Serial.print(F("Err, rc="));
         Serial.println(mqttClient.state());
       }
       lastConnectMillis = millis();
@@ -588,6 +592,8 @@ void handleHttpServer()
       remoteClient.println(F("<BR>"));
       
       remoteClient.print(F("<H1>State:</H1>"));
+      remoteClient.print(F("Soft version: \t\t"));
+      remoteClient.println(SOFT_VER);
       remoteClient.print(F("Subscription: \t\t"));
       remoteClient.println(outputCommandTopic);
       remoteClient.print(F("MQTT connection state: \t"));
